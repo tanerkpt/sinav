@@ -379,13 +379,21 @@ function sbFetch(url, opts, ms){
   return Promise.race([ fetch(url, opts), timed ]).then(function(r){ clearTimeout(to); return r; },
     function(e){ clearTimeout(to); throw e; });
 }
-function sbUpsert(row){
+/* Plain INSERT — NO ?on_conflict= . PostgREST'in upsert (on_conflict) uç noktası tabloda bir SELECT
+   politikası ister; sonuçları kilitlemek için SELECT politikamız yok. Bu yüzden yazma yolu:
+   önce düz INSERT (satır yoksa oluşturur; attempt_id tekil olduğu için varsa 409 döner, yok sayılır),
+   sonra düz PATCH (sbUpdate) ile alanları güncelle. */
+function sbInsert(row){
   if(!SB_ON || !row || !row.attempt_id) return Promise.resolve(false);
-  return sbFetch(SB_URL+"/rest/v1/"+SB_TABLE+"?on_conflict=attempt_id",{
+  return sbFetch(SB_URL+"/rest/v1/"+SB_TABLE,{
     method:"POST",
-    headers:sbHeaders({ "Prefer":"resolution=merge-duplicates,return=minimal" }),
+    headers:sbHeaders({ "Prefer":"return=minimal" }),
     body:JSON.stringify(row)
   }).then(function(r){ return r.ok; }).catch(function(){ return false; });
+}
+function sbSave(baseRow, patch){
+  if(!SB_ON || !baseRow || !baseRow.attempt_id) return Promise.resolve(false);
+  return sbInsert(baseRow).then(function(){ return sbUpdate(baseRow.attempt_id, patch||{}); });
 }
 function sbFetchAll(){
   if(!SB_ON) return Promise.resolve(null);
@@ -476,25 +484,25 @@ function patchRecord(r, patch, then){
   }
   if(then) then();
 }
+function cloudIdRow(){
+  return {
+    attempt_id:state.attemptId,
+    name:state.name, rank:state.rank||"", vessel:state.vessel||"", seamans_book_no:state.sicil||"",
+    lang:state.lang, company:CFG.company, started_at:state.started
+  };
+}
 function cloudPushStart(){
   if(!SB_ON || !state) return;
-  sbUpsert({
-    attempt_id:state.attemptId, status:"registered",
-    name:state.name, rank:state.rank||"", vessel:state.vessel||"", seamans_book_no:state.sicil||"",
-    lang:state.lang, company:CFG.company, pass_mark:CFG.passMark,
-    module_count:state.modules.length, started_at:state.started
-  });
+  var r=cloudIdRow(); r.status="registered"; r.pass_mark=CFG.passMark; r.module_count=state.modules.length;
+  sbInsert(r);
 }
 function cloudPushProgress(){
   if(!SB_ON || !state) return;
   try{
     var rec=buildRecord();
-    sbUpsert({
-      attempt_id:rec.attemptId, status:"in_progress",
-      name:rec.name, rank:rec.rank, vessel:rec.vessel, seamans_book_no:rec.sicil,
-      lang:rec.lang, company:rec.company, pass_mark:rec.passMark,
-      module_count:rec.moduleCount, passed_count:rec.passedCount,
-      started_at:rec.startedAt, record:rec
+    sbSave(cloudIdRow(), {
+      status:"in_progress", rank:rec.rank, vessel:rec.vessel, seamans_book_no:rec.sicil,
+      pass_mark:rec.passMark, module_count:rec.moduleCount, passed_count:rec.passedCount, record:rec
     });
   }catch(e){}
 }
@@ -502,14 +510,11 @@ function cloudPushDone(){
   if(!SB_ON || !state || state.cloudDone) return;
   try{
     var rec=buildRecord();
-    sbUpsert({
-      attempt_id:rec.attemptId, status:"completed",
-      name:rec.name, rank:rec.rank, vessel:rec.vessel, seamans_book_no:rec.sicil,
-      lang:rec.lang, company:rec.company,
+    sbSave(cloudIdRow(), {
+      status:"completed", rank:rec.rank, vessel:rec.vessel, seamans_book_no:rec.sicil,
       module_count:rec.moduleCount, passed_count:rec.passedCount, all_pass:rec.allPass,
       total:rec.total, pass_mark:rec.passMark, focus_total:rec.focusTotal, auto_any:rec.autoAny,
-      duration_ms:rec.durationMs, started_at:rec.startedAt, finished_at:rec.finishedAt,
-      cert_no:rec.certNo, record:rec
+      duration_ms:rec.durationMs, finished_at:rec.finishedAt, cert_no:rec.certNo, record:rec
     });
     state.cloudDone=true; save();
   }catch(e){}
