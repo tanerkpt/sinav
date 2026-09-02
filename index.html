@@ -346,6 +346,22 @@ var SB_URL   = "https://hoauaumaooxgtmjxxelq.supabase.co";
 var SB_KEY   = "sb_publishable_kDJg5MzWKTsrgWR-IYRhZA_9XFA9VC6";
 var SB_TABLE = "sinav_sonuclari";
 var SB_ON    = !!(SB_URL && SB_KEY);
+/* Build flag. Exam link (paylaşılan) = false → yönetici arayüzü yok, anahtar yalnızca yazar.
+   Özel yönetici dosyası (sadece sen) = true → service_role anahtarı + tam panel. */
+var ADMIN_UI = false;
+/* Yönetici dosyasında service_role anahtarı DOSYAYA GÖMÜLMEZ; ilk açılışta yapıştırılır,
+   yalnızca bu cihazın tarayıcısında saklanır. Böylece dosya yanlışlıkla paylaşılsa bile içinde sır yoktur. */
+var LS_SBKEY = "gsm_sb_key_v1";
+if(ADMIN_UI){
+  try{ var _sk = localStorage.getItem(LS_SBKEY); if(_sk){ SB_KEY = _sk; SB_ON = !!(SB_URL && SB_KEY); } }catch(e){}
+}
+function setServiceKey(k){
+  k = (k||"").trim(); if(!k) return false;
+  SB_KEY = k; SB_ON = !!(SB_URL && SB_KEY);
+  try{ localStorage.setItem(LS_SBKEY, k); }catch(e){}
+  return true;
+}
+function clearServiceKey(){ SB_KEY=""; SB_ON=false; cloudCache=null; try{ localStorage.removeItem(LS_SBKEY); }catch(e){} }
 var cloudCache = null, cloudLastSync = 0, cloudError = false, cloudFails = 0, adminPoll = null;
 function sbHeaders(extra){
   var h={ "apikey":SB_KEY, "Authorization":"Bearer "+SB_KEY, "Content-Type":"application/json" };
@@ -1071,8 +1087,13 @@ function applyChrome(){
 function setLang(l){ if(l===lang) return; lang=l; if(state) state.lang=l; try{ localStorage.setItem(LS_LANG,l); }catch(e){} save(); applyChrome(); render(); }
 document.getElementById("lgTr").onclick=function(){ setLang("tr"); };
 document.getElementById("lgEn").onclick=function(){ setLang("en"); };
-document.getElementById("logoBtn").onclick=function(){ renderAdmin(); window.scrollTo(0,0); };
-document.getElementById("adminBtn").onclick=function(){ renderAdmin(); window.scrollTo(0,0); };
+document.getElementById("logoBtn").onclick=function(){ if(!ADMIN_UI) return; renderAdmin(); window.scrollTo(0,0); };
+(function(){
+  var ab=document.getElementById("adminBtn");
+  if(!ab) return;
+  if(ADMIN_UI){ ab.onclick=function(){ renderAdmin(); window.scrollTo(0,0); }; }
+  else { ab.parentNode.removeChild(ab); }   /* paylaşılan sınav linkinde yönetici butonu hiç görünmez */
+})();
 
 /* focus / visibility tracking */
 function bumpFocus(){
@@ -2159,6 +2180,28 @@ function renderAdmin(){
     return;
   }
 
+  /* Yönetici dosyası: bulut anahtarı henüz girilmemişse iste (bu cihazda saklanır, dosyaya yazılmaz) */
+  if(ADMIN_UI && !SB_KEY){
+    app.innerHTML='<div class="card verify-panel"><h2>'+t.adminTitle+'</h2>'+
+      '<p class="lead" style="font-size:.86rem">Sonuçları görmek için Supabase <b>service_role</b> anahtarını bir kez yapıştırın. '+
+      'Anahtar yalnızca bu bilgisayarın tarayıcısında saklanır, dosyanın içine yazılmaz. Bu dosyayı ve anahtarı kimseyle paylaşmayın.</p>'+
+      '<label class="fld" for="asbk">service_role anahtarı</label>'+
+      '<input type="password" id="asbk" autocomplete="off" spellcheck="false" placeholder="eyJhbGciOi... veya sb_secret_...">'+
+      '<div class="note warn" id="asbkErr" style="display:none"></div>'+
+      '<div class="btnrow"><button class="btn" id="asbkGo">Kaydet ve aç</button>'+
+      '<button class="btn ghost" id="asbkBack">'+t.backApp+'</button></div></div>';
+    document.getElementById("asbkBack").onclick=adminBack;
+    document.getElementById("asbkGo").onclick=function(){
+      var v=document.getElementById("asbk").value, e=document.getElementById("asbkErr");
+      if((v||"").trim().length<20){ e.style.display="block"; e.textContent="Anahtar çok kısa görünüyor."; return; }
+      setServiceKey(v); cloudCache=null; cloudFails=0;
+      if(adminPoll){ clearInterval(adminPoll); adminPoll=null; }
+      renderAdmin();
+    };
+    var kf=document.getElementById("asbk"); if(kf) kf.focus();
+    return;
+  }
+
   if(SB_ON && adminPoll===null){
     var tick=function(){
       if(!adminUnlocked || !document.getElementById("aSearch") || cloudFails>=3){ if(adminPoll){clearInterval(adminPoll);adminPoll=null;} return; }
@@ -2257,6 +2300,7 @@ function renderAdmin(){
       '<button class="btn sm ghost" id="aDemo">'+t.admDemo+'</button>'+
       '<button class="btn sm" id="aSettings">⚙ '+t.setTitle+'</button>'+
       '<button class="btn sm ghost" id="aPin">'+t.admChangePin+'</button>'+
+      (ADMIN_UI ? '<button class="btn sm ghost" id="aSbKey">☁ Bulut anahtarı</button>' : '')+
       '<button class="btn sm ghost" id="aClear" style="border-color:var(--bad);color:var(--bad)">'+t.admClear+'</button>'+
       '<button class="btn sm" id="aBack2">'+t.backApp+'</button>'+
     '</div>'+
@@ -2320,6 +2364,12 @@ function renderAdmin(){
   var aRef=document.getElementById("aRefresh");
   if(aRef) aRef.onclick=function(){ this.textContent="…"; cloudFails=0; if(adminPoll){clearInterval(adminPoll);adminPoll=null;} refreshCloud(function(){ renderAdmin(); }); };
   document.getElementById("aPin").onclick=function(){ adminUnlocked=false; saveAdmin({}); if(adminPoll){clearInterval(adminPoll);adminPoll=null;} renderAdmin(); };
+  var aSbKeyBtn=document.getElementById("aSbKey");
+  if(aSbKeyBtn) aSbKeyBtn.onclick=function(){
+    if(confirm("Kayıtlı bulut anahtarını silip yeniden girmek ister misiniz?")){
+      clearServiceKey(); if(adminPoll){clearInterval(adminPoll);adminPoll=null;} renderAdmin();
+    }
+  };
   document.getElementById("aDemo").onclick=function(){
     var r=makeDemoRecord(); var l=loadRecords(); mergeRecords(l,[r]); saveRecords(l);
     openCerts(r, true); window.scrollTo(0,0);
